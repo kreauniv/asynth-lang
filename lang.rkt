@@ -86,7 +86,7 @@ a given argument value into a result value.
 (struct (e) after ([dur : Real] [sig : e]) #:transparent)
 (struct (e) cut ([dur : Real] [sig : e]) #:transparent)
 
-#| --change--
+#|
 In this step, we introduce a real biggie - functions!
 The general theme of language development is that a feature that we might
 rely on while implementing a language is beneficial at the language
@@ -161,7 +161,7 @@ at the moment.
 ; Hence we declare that `after` and `cut` as "syntactic sugar" and rewrite
 ; expressions into "core terms" before passing them on to the interpreter.
 
-#| --changes--
+#|
 So far, the only kind of value the interpreter dealt with was `a:Gen`.
 With functions introduced, an expression is no longer constrained to
 evaluate to an `a:Gen` value but might also be a function-value which
@@ -212,6 +212,73 @@ Notice that the recursive structure of the expression means our interpreter itse
 can use structural recursion to compute its result.
 |#
 
+;--changes--
+#|
+The branch for interpreting (id sym) below requires a new concept
+within our interpreter - what value should the interpreter produce
+when encountering an identifier term?
+
+Pretty much the only thing that can be done with the symbol is
+to get a value by looking it up from some table of symbol-value
+associations. We'll call such as set of associations an "environment".
+
+We'll use a simple implementation of such symbol-value lookup
+- using lambda functions.
+|#
+
+(define-type Env (-> Symbol Val))
+(define empty-env (λ (sym) (error 'env "Unknown symbol ~a" sym)))
+
+(: extend (-> Env Symbol Val Env))
+(define (extend env sym value)
+  (λ (k)
+    (if (equal? k sym)
+        value
+        (lookup env k))))
+
+(: lookup (-> Env Symbol Val))
+(define (lookup env sym) (env sym))
+
+; Now our interpreter needs to be augmented with a "current environment"
+; using which we'll lookup a given identifier's value.
+(: interp (-> Env SigExprC Val))
+(define (interp env expr)
+  (match expr
+    ; --changes--
+    ; We now need to wrap the result value appropriately.
+    [(? real?) (GenV (a:konst expr))]
+    [(oscil f) (GenV (a:oscil (genv (interp env f))))]
+    [(phasor f) (GenV (a:phasor (genv (interp env f))))]
+    [(mix a b) (GenV (a:mix (genv (interp env a)) (genv (interp env b))))]
+    [(mod a b) (GenV (a:mod (genv (interp env a)) (genv (interp env b))))]
+    [(line start dur end) (GenV (a:line start dur end))]
+    [(expon start dur end) (GenV (a:expon start dur end))]
+    [(stitch a dur b) (GenV (a:stitch (genv (interp env a)) dur (genv (interp env b))))]
+
+    ; Now interpreting an (id..) term is just a matter of looking up
+    ; the value associated with the symbol in the current environment.
+    ; If the symbol has no such associated value, the expression is in
+    ; error and a runtime error will be raised by `lookup`.
+    [(id sym) (lookup env sym)]
+    
+    [(fn argname expr)
+     ; We can't do anything with expr right now until the function
+     ; is applied to a value.
+     (FnV argname expr)]
+    [(app fexpr vexpr) (let ([f (fnv (interp env fexpr))]
+                             [argval (interp env vexpr)])
+                         ; Now we augment the environment with a new binding for
+                         ; the argname symbol to the argval and interpret the
+                         ; function's body.
+                         ;
+                         ; QUESTION: This "feels like" the obvious thing to do,
+                         ; but we can't go with "vibes" here and must understand
+                         ; exactly what we've chosen to do. So explore the
+                         ; consequences of this choice.
+                         (interp (extend env (FnV-argname f) argval)
+                                 (FnV-expr f)))]
+    [_ (error 'interp "Unknown expression ~a" expr)]))
+
 ; Useful in circumstances where it is a runtime error for a value
 ; to be anything other than a GenV.
 (: genv (-> Val a:Gen))
@@ -220,30 +287,14 @@ can use structural recursion to compute its result.
       (GenV-gen v)
       (error 'genv "GenV expected. Got ~a" v)))
 
-; --changes--
-; Now our interperter's type also tightens up to (-> SigExprC a:Gen)
-(: interp (-> SigExprC Val))
-(define (interp expr)
-  (match expr
-    ; --change--
-    ; We now need to wrap the result value appropriately.
-    [(? real?) (GenV (a:konst expr))]
-    [(oscil f) (GenV (a:oscil (genv (interp f))))]
-    [(phasor f) (GenV (a:phasor (genv (interp f))))]
-    [(mix a b) (GenV (a:mix (genv (interp a)) (genv (interp b))))]
-    [(mod a b) (GenV (a:mod (genv (interp a)) (genv (interp b))))]
-    [(line start dur end) (GenV (a:line start dur end))]
-    [(expon start dur end) (GenV (a:expon start dur end))]
-    [(stitch a dur b) (GenV (a:stitch (genv (interp a)) dur (genv (interp b))))]
-    [(id sym) (error 'interp "How to find out symbol value?")]
-    [(fn argname expr)
-     ; We can't do anything with expr right now until the function
-     ; is applied to a value.
-     (FnV argname expr)]
-    [(app fexpr vexpr) (let ([fval (interp fexpr)]
-                             [argval (interp vexpr)])
-                         (error 'interp "How to apply FnV to a value?"))]
-    [_ (error 'interp "Unknown expression ~a" expr)]))
+; Useful when processing (app..) terms where the first expression is
+; expected to evaluate to a FnV.
+(: fnv (-> Val FnV))
+(define (fnv v)
+  (if (FnV? v)
+      v
+      (error 'fnv "FnV expected. Got ~a" v)))
+   
 
 #|
 Try some of the following sample expressions. Run each through the
@@ -252,7 +303,7 @@ this - `(a:write-wav-file "filename.wav" result-gen dur-secs gain 48000)`.
 Ex: `(write-wav-file "sig5.wav" sig5 3.0 0.25 48000)`
 |#
 
-; -- changes --
+;
 ; Note that the expressions are now simpler to write since we adopted a new
 ; meaning for real numbers used in SigExpr positions.
 (define sig1 (oscil 300.0))
@@ -278,7 +329,31 @@ Ex: `(write-wav-file "sig5.wav" sig5 3.0 0.25 48000)`
                             (after 1.0 (oscil 600.0))))))
 
 
-; NOTE: We can't yet create any examples that use functions because
-; we haven't yet implemented β-reduction. That is the next step.
+; QUESTION: Examine the definition of sig7 and sig8 below. What do you
+; expect to be the result of rendering sig7/sig8? i.e. what "should be"
+; the result? What actually happens? To answer this, consider
+; expressing the same idea in plain Racket using the asynth module's
+; exported procedures and then examine any differences between your
+; expectation and the results of sig8. Use the following correspondences
+; to help you.
+;     (fn sym expr) ==> (λ (sym) expr)
+;     (app fexpr vexpr) ==> (fexpr vexpr)
+;     (id 'sym) ==> sym
 
+; A simple use of functions that ought to work.
+(define fsig1 (fn 'a (fn 'b
+                         (stitch (id 'a) 0.5
+                                 (stitch (id 'b) 0.5
+                                         (stitch (id 'a) 0.5
+                                                 (id 'b)))))))
+(define sig7 (app (app fsig1 (oscil 300.0)) (oscil 450.0)))
+
+
+(define fsig2 (fn 'a (stitch (id 'a) 0.5 (id 'b))))
+(define sig8 (app (fn 'f
+                       (app (fn 'b
+                                (app (id 'f) (oscil 300.0)))
+                            (oscil 450.0)))
+                   fsig2))
+                            
 
