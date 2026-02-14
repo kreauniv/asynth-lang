@@ -54,12 +54,15 @@ will be played. Note that in this primitive, there are two different
 interpretations of "real number term" being used.
 SigExpr -> (stitch SigExpr <real> SigExpr)
 
--- new "primitives" --
+-- new "syntactic sugar" --
 `after` will delay the occurrence of the signal by the given duration.
 `cut` will stop the signal after the given duration. These are also 
-useful operators in our language.
-SigExpr -> (after <real> SigExpr)
-SigExpr -> (cut <real> SigExpr)
+useful operators in our language, but their job is already well met
+by stitch. Note how we're defining these new terms in our grammar in terms
+of a production rule that does not contain them after expansion.
+This is the job of `desugar` below.
+(after dur:Real sig:SigExpr) -> (stitch 0.0 dur sig)
+(cut dur:Real sig:SigExpr) -> (stitch sig dur 0.0)
 |#
 
 
@@ -84,7 +87,7 @@ SigExpr -> (cut <real> SigExpr)
 ; This helps stitch together signals in time.
 (struct stitch ([a : SigExpr] [dur : Real] [b : SigExpr]) #:transparent)
 
-; -- two more added "primitives" --
+; -- two "syntactic sugar" terms --
 (struct after ([dur : Real] [sig : SigExpr]) #:transparent)
 (struct cut ([dur : Real] [sig : SigExpr]) #:transparent)
 
@@ -95,6 +98,34 @@ wide variety of *compositions* of the constructs of the language and recursive
 structures permit an (countably) infinite set of possibilities.
 |#
 
+; We introduce the idea of "desugaring" the `after` and `cut` terms
+; in terms of `stitch`. What we're saying here is that no matter where
+; these terms occur, we want to rewrite those terms in terms of `stitch`.
+; One option is to leave the interpreter as is, but it hinders evolving
+; the language because now when we add a new term we need to consider the
+; correctness of our interpreter with two additional terms to reckon with.
+; Hence we declare that `after` and `cut` as "syntactic sugar" and rewrite
+; expressions into "core terms" before passing them on to the interpreter.
+
+(: desugar (-> SigExpr SigExpr))
+(define (desugar expr)
+  (match expr
+    ; THINK: There is bug in the two lines below. Can you spot it?
+    [(after dur sig) (stitch 0.0 dur sig)]
+    [(cut dur sig) (stitch sig dur 0.0)]
+    ; Now we have to ensure that all terms are recursively desugared as
+    ; well before we can get a result expression that is safe to
+    ; pass to our interpreter which no longer knows about `after` and `cut`.
+    ; Note that we're constructing an expression as the result and not
+    ; evaluating it, though the below part has the same structure as
+    ; the interpreter. The act of "walking the syntax tree" is the same.
+    [(oscil f) (oscil (desugar f))]
+    [(phasor f) (phasor (desugar f))]
+    [(mix a b) (mix (desugar a) (desugar b))]
+    [(mod a b) (mod (desugar a) (desugar b))]
+    [(stitch a dur b) (stitch (desugar a) dur (desugar b))]
+    [_ expr] ; All other expressions are unaltered.
+    ))
 #|
 The interpreter's job here is to take a SigExpr and produce a a:Gen type value.
 Notice that the recursive structure of the expression means our interpreter itself
@@ -117,14 +148,9 @@ can use structural recursion to compute its result.
     [(line start dur end) (a:line start dur end)] ; Note the args remain uninterpreted.
     [(expon start dur end) (a:expon start dur end)]
     [(stitch a dur b) (a:stitch (interp a) dur (interp b))]
-    ; Here we've re-expressed our interpretation of `after` and `cut`
-    ; without using the exports offered by the library, because we
-    ; can define their semantics ("meaning") based on the primitive
-    ; that we already have - `stitch`.
-    ; QUESTION: since (stitch a dur b) = (mix (cut dur a) (after dur b)),
-    ; should we have defined `stitch` in terms of `after` and `cut` instead?
-    [(after dur sig) (interp (stitch 0.0 dur sig))]
-    [(cut dur sig) (interp (stitch sig dur 0.0))]
+    ; Our interpreter no longer needs to know about `after` and `cut` terms.
+    ; [(after dur sig) (interp (stitch 0.0 dur sig))]
+    ; [(cut dur sig) (interp (stitch sig dur 0.0))]
     [_ (error 'interp "Unknown expression ~a" expr)]))
 
 #|
@@ -150,6 +176,15 @@ Ex: `(write-wav-file "sig5.wav" sig5 3.0 0.25 48000)`
                           0.25
                           (stitch 1.0 2.0 (line 1.0 0.25 0.0)))
                   (oscil (mix 300.0 (mod 15.0 (oscil 5.0))))))
+
+; (interp sig6) will fail because our interpreter does not know about `after` and `cut`.
+; However, (interp (desugar sig6)) will succeed (despite the bug in desugar
+; mentioned above).
+(define sig6 (mod 0.3
+                  (mix (oscil 300.0)
+                       (mix (after 0.5 (oscil 450.0))
+                            (after 1.0 (oscil 600.0))))))
+
 
 
 
