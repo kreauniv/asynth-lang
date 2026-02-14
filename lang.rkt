@@ -45,11 +45,19 @@ SigExpr -> (mod SigExpr SigExpr)
 SigExpr -> (line <real> <real> <real>)
 SigExpr -> (expon <real> <real> <real>)
 
+-- added term --
+The `stitch` operator adds a new primitive that can stitch two
+signals in time. The signal represented by the first expression
+runs for the given duration (second real number argument) after
+which the signal represented by the third argument expression
+will be played. Note that in this primitive, there are two different
+interpretations of "real number term" being used.
+SigExpr -> (stitch SigExpr <real> SigExpr)
 |#
 
 
 ; konst is replaced with Real in the line below.
-(define-type SigExpr (U Real oscil phasor mix mod line expon))
+(define-type SigExpr (U Real oscil phasor mix mod line expon stitch))
 
 (struct oscil ([freq : SigExpr]) #:transparent)
 (struct phasor ([freq : SigExpr]) #:transparent)
@@ -64,6 +72,10 @@ SigExpr -> (expon <real> <real> <real>)
 ; uninterpreted real values we pass on as is to the asynth.rkt module.
 (struct line ([start : Real] [dur : Real] [end : Real]) #:transparent)
 (struct expon ([start : Real] [dur : Real] [end : Real]) #:transparent)
+
+; -- added term --
+; This helps stitch together signals in time.
+(struct stitch ([a : SigExpr] [dur : Real] [b : SigExpr]) #:transparent)
 
 #|
 Notice how the structure is recursively defined. This is a common trait in
@@ -93,12 +105,14 @@ can use structural recursion to compute its result.
     [(mod a b) (a:mod (interp a) (interp b))]
     [(line start dur end) (a:line start dur end)] ; Note the args remain uninterpreted.
     [(expon start dur end) (a:expon start dur end)]
+    [(stitch a dur b) (a:stitch (interp a) dur (interp b))]
     [_ (error 'interp "Unknown expression ~a" expr)]))
 
 #|
 Try some of the following sample expressions. Run each through the
 interpreter and supply the resultant gen to a:write-wav-file like
 this - `(a:write-wav-file "filename.wav" result-gen dur-secs gain 48000)`.
+Ex: `(write-wav-file "sig5.wav" sig5 3.0 0.25 48000)`
 |#
 
 ; -- changes --
@@ -112,6 +126,10 @@ this - `(a:write-wav-file "filename.wav" result-gen dur-secs gain 48000)`.
                           (mod 15.0
                                (oscil 5.0)))))
 (define sig4 (mod (line 1.0 2.0 0.0)
+                  (oscil (mix 300.0 (mod 15.0 (oscil 5.0))))))
+(define sig5 (mod (stitch (line 0.0 0.25 1.0)
+                          0.25
+                          (stitch 1.0 2.0 (line 1.0 0.25 0.0)))
                   (oscil (mix 300.0 (mod 15.0 (oscil 5.0))))))
 
 
