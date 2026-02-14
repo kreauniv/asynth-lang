@@ -179,8 +179,13 @@ expression.
 (define-type Val (U GenV FnV))
 
 (struct GenV ([gen : a:Gen]) #:transparent)
-(struct FnV ([argname : Symbol] [expr : SigExprC]) #:transparent)
-
+; --change--
+; Here we've added an additional slot to store an "environment"
+; - the **definition environment**. See the notes in the relevant
+; part of the interpreter below for more about this.
+(struct FnV ([denv : Env]
+             [argname : Symbol]
+             [expr : SigExprC]) #:transparent)
 
 
 ; Now the type of desugar becomes more tight. It must be (-> SigExprS SigExprC)
@@ -212,7 +217,7 @@ Notice that the recursive structure of the expression means our interpreter itse
 can use structural recursion to compute its result.
 |#
 
-;--changes--
+
 #|
 The branch for interpreting (id sym) below requires a new concept
 within our interpreter - what value should the interpreter produce
@@ -244,8 +249,7 @@ We'll use a simple implementation of such symbol-value lookup
 (: interp (-> Env SigExprC Val))
 (define (interp env expr)
   (match expr
-    ; --changes--
-    ; We now need to wrap the result value appropriately.
+    ; We need to wrap the result value appropriately.
     [(? real?) (GenV (a:konst expr))]
     [(oscil f) (GenV (a:oscil (genv (interp env f))))]
     [(phasor f) (GenV (a:phasor (genv (interp env f))))]
@@ -262,20 +266,33 @@ We'll use a simple implementation of such symbol-value lookup
     [(id sym) (lookup env sym)]
     
     [(fn argname expr)
-     ; We can't do anything with expr right now until the function
-     ; is applied to a value.
-     (FnV argname expr)]
+     ; --change--
+     ; Here we are examining an (fn..) term and constructing a FnV
+     ; value. When the resultant function is applied, what is the
+     ; environment that needs to be used to lookup any identifiers
+     ; mentioned in the expression of the (fn..)? Other than the `argname`,
+     ; any other "free variables" will need to remember any values
+     ; they were bound to ... and this is the REALLY IMPORTANT PART ...
+     ; ** at the time the FnV is constructed **
+     ; or in other words
+     ; ** in the definition environment of the (fn..) **.
+     ; So we need to store the definition env in the FnV so we
+     ; can refer to it later when we need it.
+     (FnV env argname expr)]
     [(app fexpr vexpr) (let ([f (fnv (interp env fexpr))]
                              [argval (interp env vexpr)])
                          ; Now we augment the environment with a new binding for
                          ; the argname symbol to the argval and interpret the
                          ; function's body.
                          ;
-                         ; QUESTION: This "feels like" the obvious thing to do,
-                         ; but we can't go with "vibes" here and must understand
-                         ; exactly what we've chosen to do. So explore the
-                         ; consequences of this choice.
-                         (interp (extend env (FnV-argname f) argval)
+                         ; --change--
+                         ; Here, we need to extend not the interpretation environment,
+                         ; but the **definition environment** of the function so that
+                         ; any other identifiers available at the point of definition
+                         ; are available when evaluating its body.
+                         ;
+                         ; The only change here is from `env` to `(FnV-denv f)`. 
+                         (interp (extend (FnV-denv f) (FnV-argname f) argval)
                                  (FnV-expr f)))]
     [_ (error 'interp "Unknown expression ~a" expr)]))
 
