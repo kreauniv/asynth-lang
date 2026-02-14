@@ -27,76 +27,92 @@ The lambda calculus is itself an expression language.
 
 #|  The Grammar:
 
--- change --
-In our context, it is cumbersome to have to write (konst 3.0) whenever
-we want to use a fixed value for a particular SigExpr position. If we
-have to make this change in the underlying library, every operator will
-have to implement it. However, if we declare that in our language that
-"a real number used in a SigExpr stands for a value that remains unchanged
-over time", we can simplify our expressions.
+After the step of adding the two "syntactic sugar" terms
+`after` and `cut` which expand to `stitch`, we've in fact split
+our grammar into two languages - a "core language" and "sugar language".
+Here is what we have in principle -
 
-SigExpr -> <real>
-SigExpr -> (oscil SigExpr)
-SigExpr -> (phasor SigExpr)
-SigExpr -> (mix SigExpr SigExpr)
-SigExpr -> (mod SigExpr SigExpr)
+# The core language
 
--- added terms --
-SigExpr -> (line <real> <real> <real>)
-SigExpr -> (expon <real> <real> <real>)
+SigExprC -> <real>
+SigExprC -> (oscil SigExprC)
+SigExprC -> (phasor SigExprC)
+SigExprC -> (mix SigExprC SigExprC)
+SigExprC -> (mod SigExprC SigExprC)
+SigExprC -> (line <real> <real> <real>)
+SigExprC -> (expon <real> <real> <real>)
+SigExprC -> (stitch SigExprC <real> SigExprC)
 
--- added term --
-The `stitch` operator adds a new primitive that can stitch two
-signals in time. The signal represented by the first expression
-runs for the given duration (second real number argument) after
-which the signal represented by the third argument expression
-will be played. Note that in this primitive, there are two different
-interpretations of "real number term" being used.
-SigExpr -> (stitch SigExpr <real> SigExpr)
+In this "core language", all the core terms can only contain
+other core terms.
 
--- new "syntactic sugar" --
-`after` will delay the occurrence of the signal by the given duration.
-`cut` will stop the signal after the given duration. These are also 
-useful operators in our language, but their job is already well met
-by stitch. Note how we're defining these new terms in our grammar in terms
-of a production rule that does not contain them after expansion.
-This is the job of `desugar` below.
-(after dur:Real sig:SigExpr) -> (stitch 0.0 dur sig)
-(cut dur:Real sig:SigExpr) -> (stitch sig dur 0.0)
+# The sugar language
+
+SigExprS -> <real>
+SigExprS -> (oscil SigExprS)
+SigExprS -> (phasor SigExprS)
+SigExprS -> (mix SigExprS SigExprS)
+SigExprS -> (mod SigExprS SigExprS)
+SigExprS -> (line <real> <real> <real>)
+SigExprS -> (expon <real> <real> <real>)
+SigExprS -> (stitch SigExprS <real> SigExprS)
+
+; The new sugar terms that differ from the core language.
+SigExprS -> (after <real> SigExprS)
+SigExprS -> (cut <real> SigExprS)
+
+Our type SigExpr does not capture this difference. The difference is
+important because our interpreter's actual type is (-> SigExprC a:Gen)
+and `desugar`'s actual type is (-> SigExprS SigExprC).
 |#
-
-
-; konst is replaced with Real in the line below.
-(define-type SigExpr (U Real oscil phasor mix mod line expon stitch after cut))
-
-(struct oscil ([freq : SigExpr]) #:transparent)
-(struct phasor ([freq : SigExpr]) #:transparent)
-(struct mix ([a : SigExpr] [b : SigExpr]) #:transparent)
-(struct mod ([a : SigExpr] [b : SigExpr]) #:transparent)
-
-; -- added terms --
-; These help expand what we can do in our language through addition
-; of new "primitives". Note that here the Real values do not stand
-; for "signals". Only when a real number is present in a SigExpr position
-; is it considered to be a constant signal. Here, Real numbers are just
-; uninterpreted real values we pass on as is to the asynth.rkt module.
-(struct line ([start : Real] [dur : Real] [end : Real]) #:transparent)
-(struct expon ([start : Real] [dur : Real] [end : Real]) #:transparent)
-
-; -- added term --
-; This helps stitch together signals in time.
-(struct stitch ([a : SigExpr] [dur : Real] [b : SigExpr]) #:transparent)
-
-; -- two "syntactic sugar" terms --
-(struct after ([dur : Real] [sig : SigExpr]) #:transparent)
-(struct cut ([dur : Real] [sig : SigExpr]) #:transparent)
 
 #|
-Notice how the structure is recursively defined. This is a common trait in
-every programming language because the intent of a language is to permit a
-wide variety of *compositions* of the constructs of the language and recursive
-structures permit an (countably) infinite set of possibilities.
+There is much redundancy in the two grammars since we have to now invent different
+names like oscilC and oscilS to distinguish whether the oscil can contain only
+core terms or also permits sugar terms. To avoid this redundancy, we
+parameterize the term types so we can decide what they can contain later on.
+Racket permits this. If (T e) is a type, where e is a type, then T is called
+a "type constructor" much like a function is a "value constructor" that transforms
+a given argument value into a result value.
 |#
+
+(struct (e) oscil ([freq : e]) #:transparent)
+(struct (e) phasor ([freq : e]) #:transparent)
+(struct (e) mix ([a : e] [b : e]) #:transparent)
+(struct (e) mod ([a : e] [b : e]) #:transparent)
+(struct line ([start : Real] [dur : Real] [end : Real]) #:transparent)
+(struct expon ([start : Real] [dur : Real] [end : Real]) #:transparent)
+(struct (e) stitch ([a : e] [dur : Real] [b : e]) #:transparent)
+(struct (e) after ([dur : Real] [sig : e]) #:transparent)
+(struct (e) cut ([dur : Real] [sig : e]) #:transparent)
+
+(define-type (SigCoreTerm e) (U Real
+                                (oscil e)
+                                (phasor e)
+                                ; Note that `mix` here refers to the
+                                ; type constructor and not the struct's
+                                ; value constructor. So it only takes
+                                ; one argument as declared in the (struct ...)
+                                (mix e)
+                                (mod e)
+                                line
+                                expon
+                                (stitch e)))
+
+; The pure Sugar terms.
+(define-type (SigSugarTerm e) (U (after e)
+                                 (cut e)))
+
+; Now we're ready to define the SigExprC and SigExprS grammars.
+
+; Here we're saying SigExprC is all the SigCore terms which can only contain
+; other SigExprC terms.
+(define-type SigExprC (SigCoreTerm SigExprC))
+
+; Here we're saying SigExprS can be any core term that permits other sugar
+; terms within it, or any of the sugar terms that also permit other sugar terms
+; within them.
+(define-type SigExprS (U (SigCoreTerm SigExprS) (SigSugarTerm SigExprS)))
 
 ; We introduce the idea of "desugaring" the `after` and `cut` terms
 ; in terms of `stitch`. What we're saying here is that no matter where
@@ -107,24 +123,34 @@ structures permit an (countably) infinite set of possibilities.
 ; Hence we declare that `after` and `cut` as "syntactic sugar" and rewrite
 ; expressions into "core terms" before passing them on to the interpreter.
 
-(: desugar (-> SigExpr SigExpr))
+; --changes--
+; Now the type of desugar becomes more tight. It must be (-> SigExprS SigExprC)
+
+(: desugar (-> SigExprS SigExprC))
 (define (desugar expr)
   (match expr
-    ; THINK: There is bug in the two lines below. Can you spot it?
-    [(after dur sig) (stitch 0.0 dur sig)]
-    [(cut dur sig) (stitch sig dur 0.0)]
-    ; Now we have to ensure that all terms are recursively desugared as
-    ; well before we can get a result expression that is safe to
-    ; pass to our interpreter which no longer knows about `after` and `cut`.
-    ; Note that we're constructing an expression as the result and not
-    ; evaluating it, though the below part has the same structure as
-    ; the interpreter. The act of "walking the syntax tree" is the same.
+    ; THE BUG: The following two lines were originally -
+    ; [(after dur sig) (stitch 0.0 dur sig)]
+    ; [(cut dur sig) (stitch sig dur 0.0)]
+    ; The problem is that "sig" is itself permitted to have sugar
+    ; terms that need desugaring. After we tightened the types, the
+    ; type system is able to spot this error. While earlier, we would've
+    ; needed to run it on a suitable test to spot it.
+    [(after dur sig) (stitch 0.0 dur (desugar sig))]
+    [(cut dur sig) (stitch (desugar sig) dur 0.0)]
+
     [(oscil f) (oscil (desugar f))]
     [(phasor f) (phasor (desugar f))]
     [(mix a b) (mix (desugar a) (desugar b))]
     [(mod a b) (mod (desugar a) (desugar b))]
     [(stitch a dur b) (stitch (desugar a) dur (desugar b))]
-    [_ expr] ; All other expressions are unaltered.
+    
+    ; --change--
+    ; We now need to be explicit about the remaining expressions
+    [(? real?) expr]
+    [(line start dur end) expr]
+    [(expon start dur end) expr]
+    [_ (error 'desugar "Unknown sugar term ~a" expr)]
     ))
 #|
 The interpreter's job here is to take a SigExpr and produce a a:Gen type value.
@@ -132,7 +158,9 @@ Notice that the recursive structure of the expression means our interpreter itse
 can use structural recursion to compute its result.
 |#
 
-(: interp (-> SigExpr a:Gen))
+; --changes--
+; Now our interperter's type also tightens up to (-> SigExprC a:Gen)
+(: interp (-> SigExprC a:Gen))
 (define (interp expr)
   (match expr
     ; This ? syntax for the pattern here says that this pattern matches
