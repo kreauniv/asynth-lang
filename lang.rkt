@@ -117,8 +117,14 @@ can use structural recursion to compute its result.
     [(line start dur end) (a:line start dur end)] ; Note the args remain uninterpreted.
     [(expon start dur end) (a:expon start dur end)]
     [(stitch a dur b) (a:stitch (interp a) dur (interp b))]
-    [(after dur sig) (a:after dur (interp sig))]
-    [(cut dur sig) (a:cut dur (interp sig))]
+    ; Here we've re-expressed our interpretation of `after` and `cut`
+    ; without using the exports offered by the library, because we
+    ; can define their semantics ("meaning") based on the primitive
+    ; that we already have - `stitch`.
+    ; QUESTION: since (stitch a dur b) = (mix (cut dur a) (after dur b)),
+    ; should we have defined `stitch` in terms of `after` and `cut` instead?
+    [(after dur sig) (interp (stitch 0.0 dur sig))]
+    [(cut dur sig) (interp (stitch sig dur 0.0))]
     [_ (error 'interp "Unknown expression ~a" expr)]))
 
 #|
