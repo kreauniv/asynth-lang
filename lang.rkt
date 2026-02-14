@@ -86,6 +86,41 @@ a given argument value into a result value.
 (struct (e) after ([dur : Real] [sig : e]) #:transparent)
 (struct (e) cut ([dur : Real] [sig : e]) #:transparent)
 
+#| --change--
+In this step, we introduce a real biggie - functions!
+The general theme of language development is that a feature that we might
+rely on while implementing a language is beneficial at the language
+level, at least for general purpose programming languages. For specialist
+languages, the restrictions placed will need to be carefully chosen.
+First the new (core) terms we need to introduce are the notion of
+a "function expression", a reference to an identifier, and an
+expression that applies a function to an argument.
+
+SigExprC -> (Fn arg:Symbol expr:SigExprC)
+SigExprC -> (id s:Symbol)
+SigExprC -> (app SigExprC SigExprC)
+
+So we restrict ourselves to single-argument functions as we know
+how to reduce multiple-argument functions as nested single argument
+functions and so we can treat them as syntactic sugar.
+
+There are some constraints here we can't impost using our type system
+at the moment.
+
+1. When our interpreter evaluates an (id s:Symbol) expression, the
+   identifier has to be well defined and have a valid bound value. So
+   there is this notion of "an identifier being bound to a value"
+   that is also introduced.
+
+2. The first slot of an `app` term must evaluate to a function-value
+   so that it can be applied to the second. `app` in essence is expected
+   match the LHS of the β-reduction rule of lambda calculus.
+|#
+
+(struct (e) fn ([arg : Symbol] [expr : e]) #:transparent)
+(struct id ([sym : Symbol]) #:transparent)
+(struct (e) app ([fn : e] [arg : e]) #:transparent)
+
 (define-type (SigCoreTerm e) (U Real
                                 (oscil e)
                                 (phasor e)
@@ -97,7 +132,10 @@ a given argument value into a result value.
                                 (mod e)
                                 line
                                 expon
-                                (stitch e)))
+                                (stitch e)
+                                (fn e)
+                                id
+                                (app e)))
 
 ; The pure Sugar terms.
 (define-type (SigSugarTerm e) (U (after e)
@@ -123,19 +161,33 @@ a given argument value into a result value.
 ; Hence we declare that `after` and `cut` as "syntactic sugar" and rewrite
 ; expressions into "core terms" before passing them on to the interpreter.
 
-; --changes--
+#| --changes--
+So far, the only kind of value the interpreter dealt with was `a:Gen`.
+With functions introduced, an expression is no longer constrained to
+evaluate to an `a:Gen` value but might also be a function-value which
+can be applied to some other value to produce, say, an `a:Gen` or even
+another function.
+
+So in this iteration, we make the kinds of values that our interpreter can
+produce explicit. This is, in a way, the beginnings of a type system.
+Though our language itself has no facility to express types yet, an expression
+in our language is only correct as long as the above two mentioned
+constraints hold for every (id..) and (app..) sub-expression in a given
+expression.
+|#
+
+(define-type Val (U GenV FnV))
+
+(struct GenV ([gen : a:Gen]) #:transparent)
+(struct FnV ([argname : Symbol] [expr : SigExprC]) #:transparent)
+
+
+
 ; Now the type of desugar becomes more tight. It must be (-> SigExprS SigExprC)
 
 (: desugar (-> SigExprS SigExprC))
 (define (desugar expr)
   (match expr
-    ; THE BUG: The following two lines were originally -
-    ; [(after dur sig) (stitch 0.0 dur sig)]
-    ; [(cut dur sig) (stitch sig dur 0.0)]
-    ; The problem is that "sig" is itself permitted to have sugar
-    ; terms that need desugaring. After we tightened the types, the
-    ; type system is able to spot this error. While earlier, we would've
-    ; needed to run it on a suitable test to spot it.
     [(after dur sig) (stitch 0.0 dur (desugar sig))]
     [(cut dur sig) (stitch (desugar sig) dur 0.0)]
 
@@ -144,12 +196,14 @@ a given argument value into a result value.
     [(mix a b) (mix (desugar a) (desugar b))]
     [(mod a b) (mod (desugar a) (desugar b))]
     [(stitch a dur b) (stitch (desugar a) dur (desugar b))]
+    [(fn argname expr) (fn argname (desugar expr))]
+    [(app fexpr vexpr) (app (desugar fexpr) (desugar vexpr))]
     
-    ; --change--
     ; We now need to be explicit about the remaining expressions
     [(? real?) expr]
     [(line start dur end) expr]
     [(expon start dur end) expr]
+    [(id sym) expr]
     [_ (error 'desugar "Unknown sugar term ~a" expr)]
     ))
 #|
@@ -158,27 +212,37 @@ Notice that the recursive structure of the expression means our interpreter itse
 can use structural recursion to compute its result.
 |#
 
+; Useful in circumstances where it is a runtime error for a value
+; to be anything other than a GenV.
+(: genv (-> Val a:Gen))
+(define (genv v)
+  (if (GenV? v)
+      (GenV-gen v)
+      (error 'genv "GenV expected. Got ~a" v)))
+
 ; --changes--
 ; Now our interperter's type also tightens up to (-> SigExprC a:Gen)
-(: interp (-> SigExprC a:Gen))
+(: interp (-> SigExprC Val))
 (define (interp expr)
   (match expr
-    ; This ? syntax for the pattern here says that this pattern matches
-    ; if the `(real? expr)` evaluates to `#t`. You can see in the definition
-    ; of the type SigExpr above that `Real` is also a possible expression.
-    ; This one line adds a new interpretation for real numbers used in SigExpr
-    ; positions as "a signal yielding a value constant in time".
-    [(? real?) (a:konst expr)]
-    [(oscil f) (a:oscil (interp f))]
-    [(phasor f) (a:phasor (interp f))]
-    [(mix a b) (a:mix (interp a) (interp b))]
-    [(mod a b) (a:mod (interp a) (interp b))]
-    [(line start dur end) (a:line start dur end)] ; Note the args remain uninterpreted.
-    [(expon start dur end) (a:expon start dur end)]
-    [(stitch a dur b) (a:stitch (interp a) dur (interp b))]
-    ; Our interpreter no longer needs to know about `after` and `cut` terms.
-    ; [(after dur sig) (interp (stitch 0.0 dur sig))]
-    ; [(cut dur sig) (interp (stitch sig dur 0.0))]
+    ; --change--
+    ; We now need to wrap the result value appropriately.
+    [(? real?) (GenV (a:konst expr))]
+    [(oscil f) (GenV (a:oscil (genv (interp f))))]
+    [(phasor f) (GenV (a:phasor (genv (interp f))))]
+    [(mix a b) (GenV (a:mix (genv (interp a)) (genv (interp b))))]
+    [(mod a b) (GenV (a:mod (genv (interp a)) (genv (interp b))))]
+    [(line start dur end) (GenV (a:line start dur end))]
+    [(expon start dur end) (GenV (a:expon start dur end))]
+    [(stitch a dur b) (GenV (a:stitch (genv (interp a)) dur (genv (interp b))))]
+    [(id sym) (error 'interp "How to find out symbol value?")]
+    [(fn argname expr)
+     ; We can't do anything with expr right now until the function
+     ; is applied to a value.
+     (FnV argname expr)]
+    [(app fexpr vexpr) (let ([fval (interp fexpr)]
+                             [argval (interp vexpr)])
+                         (error 'interp "How to apply FnV to a value?"))]
     [_ (error 'interp "Unknown expression ~a" expr)]))
 
 #|
@@ -214,6 +278,7 @@ Ex: `(write-wav-file "sig5.wav" sig5 3.0 0.25 48000)`
                             (after 1.0 (oscil 600.0))))))
 
 
-
+; NOTE: We can't yet create any examples that use functions because
+; we haven't yet implemented β-reduction. That is the next step.
 
 
