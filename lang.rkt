@@ -53,11 +53,18 @@ which the signal represented by the third argument expression
 will be played. Note that in this primitive, there are two different
 interpretations of "real number term" being used.
 SigExpr -> (stitch SigExpr <real> SigExpr)
+
+-- new "primitives" --
+`after` will delay the occurrence of the signal by the given duration.
+`cut` will stop the signal after the given duration. These are also 
+useful operators in our language.
+SigExpr -> (after <real> SigExpr)
+SigExpr -> (cut <real> SigExpr)
 |#
 
 
 ; konst is replaced with Real in the line below.
-(define-type SigExpr (U Real oscil phasor mix mod line expon stitch))
+(define-type SigExpr (U Real oscil phasor mix mod line expon stitch after cut))
 
 (struct oscil ([freq : SigExpr]) #:transparent)
 (struct phasor ([freq : SigExpr]) #:transparent)
@@ -76,6 +83,10 @@ SigExpr -> (stitch SigExpr <real> SigExpr)
 ; -- added term --
 ; This helps stitch together signals in time.
 (struct stitch ([a : SigExpr] [dur : Real] [b : SigExpr]) #:transparent)
+
+; -- two more added "primitives" --
+(struct after ([dur : Real] [sig : SigExpr]) #:transparent)
+(struct cut ([dur : Real] [sig : SigExpr]) #:transparent)
 
 #|
 Notice how the structure is recursively defined. This is a common trait in
@@ -106,6 +117,8 @@ can use structural recursion to compute its result.
     [(line start dur end) (a:line start dur end)] ; Note the args remain uninterpreted.
     [(expon start dur end) (a:expon start dur end)]
     [(stitch a dur b) (a:stitch (interp a) dur (interp b))]
+    [(after dur sig) (a:after dur (interp sig))]
+    [(cut dur sig) (a:cut dur (interp sig))]
     [_ (error 'interp "Unknown expression ~a" expr)]))
 
 #|
