@@ -3,8 +3,8 @@
 (provide write-wav-file 
          Gen
          (struct-out step)
-         konst clock phasor oscil noise midi2hz mix mod
-         line expon decay stitch cut after
+         konst clock phasor oscil noise midi2hz sign mix mod
+         line expon decay stitch cut after pan switch
          d adsr fadein fadeout crossfade
          lpf bpf bpf0 hpf
          loop seq dynseq)
@@ -166,6 +166,11 @@
   (mapgen (lambda (n) (* 440.0 (exp (* (log 2) (/ (- n 69) 12)))))
           notenum))
 
+; Maps a signal to -1,0,+1.
+(: sign (-> Gen Gen))
+(define (sign s)
+  (mapgen sgn s))
+    
 ; The simplest operation that combines two audio Gens is to "mix" them. This
 ; is simple addition of the sample values produced by the processes. However,
 ; you do need to be aware of whether the step can exceed the [-1,1] range.
@@ -257,6 +262,38 @@
 (: after (-> Real Gen Gen))
 (define (after dur g)
   (stitch (konst 0.0) dur g))
+
+; Uses the first control signal to mix between the second and third.
+; If the control signal is +1, the result is entirely the second signal.
+; If the control signal is -1, the result is entirely the third signal.
+; In between, the two are mixed smoothly.
+; QUESTION: Is pan a genuine primitive or "sugar"?
+(: pan (-> Gen Gen Gen Gen))
+(define (pan c pos neg)
+  (λ (dt)
+    (match-let ([(step cv cg) (c dt)]
+                [(step pv pg) (pos dt)]
+                [(step nv ng) (neg dt)])
+      (step (+ (* 0.5 (+ 1.0 cv) pv) (* 0.5 (- 1.0 cv) nv))
+            (pan cg pg ng)))))
+
+; A very different variant of pan with the same signature.
+; If the control signal is 0 or positive, the result is the
+; pos signal. If the control signal is negative, the result
+; is the neg signal. The difference with pan is that while
+; pan runs both signals all the time, switch will pause/resume
+; the signals depending on the sign of the control signals.
+; That's why it is named "switch" - 'cos it switches between
+; the two signals.
+(: switch (-> Gen Gen Gen Gen))
+(define (switch c pos neg)
+  (λ (dt)
+    (match-let ([(step cv cg) (c dt)])
+      (if (< cv 0.0)
+          (match-let ([(step nv ng) (neg dt)])
+            (step nv (switch cg pos ng)))
+          (match-let ([(step pv pg) (pos dt)])
+            (step pv (switch cg pg neg)))))))
 
 ; The "ADSR" curve refers to a four segment curve with an "attack" period over
 ; which the value rises from 0.0 to some peak, followed by a short "decay"
